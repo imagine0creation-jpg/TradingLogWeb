@@ -1,4 +1,4 @@
-import { createChart } from "lightweight-charts";
+import { AreaSeries, createChart } from "lightweight-charts";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
@@ -148,7 +148,7 @@ function TradingViewStyleChart({ history, symbol }) {
       }
     });
 
-    const series = chart.addAreaSeries({
+    const series = chart.addSeries(AreaSeries, {
       topColor: "rgba(163, 255, 111, 0.28)",
       bottomColor: "rgba(163, 255, 111, 0.02)",
       lineColor: "#a3ff6f",
