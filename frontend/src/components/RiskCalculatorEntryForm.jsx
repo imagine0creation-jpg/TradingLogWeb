@@ -4,6 +4,7 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000
 
 const EMOTIONS = ["Calm", "FOMO", "Fear", "Greedy", "Disciplined", "Overconfident"];
 const SYMBOL_OPTIONS = ["EURUSD", "GBPUSD", "USDJPY", "BTCUSD"];
+const MAX_HISTORY_POINTS = 40;
 
 const getLocalDateTime = () => {
   const now = new Date();
@@ -68,9 +69,129 @@ function TextField({ label, name, value, onChange, type = "text", placeholder })
   );
 }
 
+function LiveAssetChart({ history, symbol }) {
+  const chartWidth = 360;
+  const chartHeight = 176;
+  const innerPadding = 14;
+
+  const series = useMemo(() => {
+    if (history.length === 0) {
+      return {
+        linePath: "",
+        areaPath: "",
+        minPrice: 0,
+        maxPrice: 0,
+        latestPrice: null,
+        change: 0,
+        isUp: true
+      };
+    }
+
+    const prices = history.map((point) => point.price);
+    const minPrice = Math.min(...prices);
+    const maxPrice = Math.max(...prices);
+    const range = Math.max(maxPrice - minPrice, 0.00001);
+
+    const points = history.map((point, index) => {
+      const x =
+        innerPadding +
+        (index / Math.max(history.length - 1, 1)) * (chartWidth - innerPadding * 2);
+      const y =
+        chartHeight -
+        innerPadding -
+        ((point.price - minPrice) / range) * (chartHeight - innerPadding * 2);
+
+      return `${x.toFixed(2)},${y.toFixed(2)}`;
+    });
+
+    const linePath = `M ${points.join(" L ")}`;
+    const firstPoint = points[0];
+    const lastPoint = points[points.length - 1];
+    const areaPath =
+      `${linePath} L ${lastPoint.split(",")[0]},${chartHeight - innerPadding} ` +
+      `L ${firstPoint.split(",")[0]},${chartHeight - innerPadding} Z`;
+
+    const latestPrice = prices[prices.length - 1];
+    const openingPrice = prices[0];
+    const change = latestPrice - openingPrice;
+
+    return {
+      linePath,
+      areaPath,
+      minPrice,
+      maxPrice,
+      latestPrice,
+      change,
+      isUp: change >= 0
+    };
+  }, [history]);
+
+  return (
+    <div className="rounded-xl border border-white/10 bg-black/25 p-4 shadow-inner shadow-black/20">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase tracking-wide text-ink/65">Live Asset Diagram</p>
+          <p className="mt-1 font-display text-2xl text-sand">{symbol}</p>
+        </div>
+        <div className="text-right">
+          <p className="font-display text-xl text-ink">
+            {series.latestPrice !== null ? series.latestPrice.toFixed(5) : "Loading..."}
+          </p>
+          <p className={`text-xs ${series.isUp ? "text-lime" : "text-alert"}`}>
+            {series.change >= 0 ? "+" : ""}
+            {series.change.toFixed(5)}
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-4 overflow-hidden rounded-xl border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.05),rgba(0,0,0,0.15))]">
+        <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} className="h-44 w-full">
+          <defs>
+            <linearGradient id="priceArea" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stopColor="rgba(163,255,111,0.45)" />
+              <stop offset="100%" stopColor="rgba(163,255,111,0.02)" />
+            </linearGradient>
+          </defs>
+
+          {[0.2, 0.4, 0.6, 0.8].map((ratio) => (
+            <line
+              key={ratio}
+              x1={innerPadding}
+              y1={chartHeight * ratio}
+              x2={chartWidth - innerPadding}
+              y2={chartHeight * ratio}
+              stroke="rgba(255,255,255,0.08)"
+              strokeDasharray="4 6"
+            />
+          ))}
+
+          {series.areaPath && <path d={series.areaPath} fill="url(#priceArea)" />}
+          {series.linePath && (
+            <path
+              d={series.linePath}
+              fill="none"
+              stroke={series.isUp ? "#a3ff6f" : "#ff6c5f"}
+              strokeWidth="3"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          )}
+        </svg>
+      </div>
+
+      <div className="mt-3 flex items-center justify-between text-xs text-ink/65">
+        <span>Low {series.minPrice.toFixed(5)}</span>
+        <span>Window {history.length} ticks</span>
+        <span>High {series.maxPrice.toFixed(5)}</span>
+      </div>
+    </div>
+  );
+}
+
 export default function RiskCalculatorEntryForm() {
   const [form, setForm] = useState(defaultForm);
   const [livePrice, setLivePrice] = useState(null);
+  const [priceHistory, setPriceHistory] = useState([]);
   const [priceError, setPriceError] = useState("");
   const [submitState, setSubmitState] = useState("idle");
   const [submitMessage, setSubmitMessage] = useState("");
@@ -82,7 +203,12 @@ export default function RiskCalculatorEntryForm() {
     eventSource.onmessage = (event) => {
       try {
         const payload = JSON.parse(event.data);
-        setLivePrice(toNumber(payload.price));
+        const nextPrice = toNumber(payload.price);
+        setLivePrice(nextPrice);
+        setPriceHistory((current) => {
+          const nextHistory = [...current, { price: nextPrice, timestamp: payload.timestamp }];
+          return nextHistory.slice(-MAX_HISTORY_POINTS);
+        });
         setPriceError("");
       } catch (_error) {
         setPriceError("Unable to parse live price payload.");
@@ -407,6 +533,8 @@ export default function RiskCalculatorEntryForm() {
       </section>
 
       <aside className="space-y-3 lg:col-span-4">
+        <LiveAssetChart history={priceHistory} symbol={form.symbol} />
+
         <div className={metricClass}>
           <p className="text-xs uppercase tracking-wide text-ink/65">Live Price</p>
           <p className="mt-1 font-display text-2xl text-sand">
