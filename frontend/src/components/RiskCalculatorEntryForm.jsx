@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { createChart } from "lightweight-charts";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
 
 const EMOTIONS = ["Calm", "FOMO", "Fear", "Greedy", "Disciplined", "Overconfident"];
 const SYMBOL_OPTIONS = ["EURUSD", "GBPUSD", "USDJPY", "BTCUSD"];
-const MAX_HISTORY_POINTS = 40;
+const MAX_HISTORY_POINTS = 120;
 
 const getLocalDateTime = () => {
   const now = new Date();
@@ -16,6 +17,8 @@ const toNumber = (value) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
 };
+
+const formatLivePrice = (value) => (value === null ? "" : value.toFixed(5));
 
 const defaultForm = {
   symbol: "EURUSD",
@@ -35,10 +38,31 @@ const defaultForm = {
   diaryNotes: ""
 };
 
-function NumberField({ label, name, value, onChange, step = "any", min = "0", placeholder }) {
+function NumberField({
+  label,
+  name,
+  value,
+  onChange,
+  step = "any",
+  min = "0",
+  placeholder,
+  actionLabel,
+  onAction
+}) {
   return (
     <label className="flex flex-col gap-1">
-      <span className="text-xs uppercase tracking-wide text-ink/70">{label}</span>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs uppercase tracking-wide text-ink/70">{label}</span>
+        {actionLabel && onAction ? (
+          <button
+            type="button"
+            onClick={onAction}
+            className="rounded-full border border-lime/50 bg-lime/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-lime transition hover:bg-lime/20"
+          >
+            {actionLabel}
+          </button>
+        ) : null}
+      </div>
       <input
         type="number"
         name={name}
@@ -69,120 +93,130 @@ function TextField({ label, name, value, onChange, type = "text", placeholder })
   );
 }
 
-function LiveAssetChart({ history, symbol }) {
-  const chartWidth = 360;
-  const chartHeight = 176;
-  const innerPadding = 14;
+function TradingViewStyleChart({ history, symbol }) {
+  const containerRef = useRef(null);
+  const chartRef = useRef(null);
+  const seriesRef = useRef(null);
 
-  const series = useMemo(() => {
+  const stats = useMemo(() => {
     if (history.length === 0) {
-      return {
-        linePath: "",
-        areaPath: "",
-        minPrice: 0,
-        maxPrice: 0,
-        latestPrice: null,
-        change: 0,
-        isUp: true
-      };
+      return { last: null, change: 0, low: 0, high: 0, isUp: true };
     }
 
     const prices = history.map((point) => point.price);
-    const minPrice = Math.min(...prices);
-    const maxPrice = Math.max(...prices);
-    const range = Math.max(maxPrice - minPrice, 0.00001);
-
-    const points = history.map((point, index) => {
-      const x =
-        innerPadding +
-        (index / Math.max(history.length - 1, 1)) * (chartWidth - innerPadding * 2);
-      const y =
-        chartHeight -
-        innerPadding -
-        ((point.price - minPrice) / range) * (chartHeight - innerPadding * 2);
-
-      return `${x.toFixed(2)},${y.toFixed(2)}`;
-    });
-
-    const linePath = `M ${points.join(" L ")}`;
-    const firstPoint = points[0];
-    const lastPoint = points[points.length - 1];
-    const areaPath =
-      `${linePath} L ${lastPoint.split(",")[0]},${chartHeight - innerPadding} ` +
-      `L ${firstPoint.split(",")[0]},${chartHeight - innerPadding} Z`;
-
-    const latestPrice = prices[prices.length - 1];
-    const openingPrice = prices[0];
-    const change = latestPrice - openingPrice;
+    const first = prices[0];
+    const last = prices[prices.length - 1];
+    const change = last - first;
 
     return {
-      linePath,
-      areaPath,
-      minPrice,
-      maxPrice,
-      latestPrice,
+      last,
       change,
+      low: Math.min(...prices),
+      high: Math.max(...prices),
       isUp: change >= 0
     };
   }, [history]);
 
+  useEffect(() => {
+    if (!containerRef.current) {
+      return undefined;
+    }
+
+    const chart = createChart(containerRef.current, {
+      autoSize: true,
+      height: 260,
+      layout: {
+        background: { color: "#0d1219" },
+        textColor: "rgba(239,243,248,0.75)",
+        fontFamily: "Manrope, sans-serif"
+      },
+      grid: {
+        vertLines: { color: "rgba(255,255,255,0.05)" },
+        horzLines: { color: "rgba(255,255,255,0.06)" }
+      },
+      crosshair: {
+        vertLine: { color: "rgba(163,255,111,0.35)", labelBackgroundColor: "#11161d" },
+        horzLine: { color: "rgba(163,255,111,0.35)", labelBackgroundColor: "#11161d" }
+      },
+      rightPriceScale: {
+        borderColor: "rgba(255,255,255,0.08)"
+      },
+      timeScale: {
+        borderColor: "rgba(255,255,255,0.08)",
+        timeVisible: true,
+        secondsVisible: true
+      }
+    });
+
+    const series = chart.addAreaSeries({
+      topColor: "rgba(163, 255, 111, 0.28)",
+      bottomColor: "rgba(163, 255, 111, 0.02)",
+      lineColor: "#a3ff6f",
+      lineWidth: 2,
+      priceLineColor: "#f4e5b3",
+      lastValueVisible: true,
+      crosshairMarkerBorderColor: "#a3ff6f",
+      crosshairMarkerBackgroundColor: "#0d1219"
+    });
+
+    chartRef.current = chart;
+    seriesRef.current = series;
+
+    const resizeObserver = new ResizeObserver(() => {
+      chart.timeScale().fitContent();
+    });
+
+    resizeObserver.observe(containerRef.current);
+
+    return () => {
+      resizeObserver.disconnect();
+      chart.remove();
+      chartRef.current = null;
+      seriesRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!seriesRef.current) {
+      return;
+    }
+
+    const data = history.map((point) => ({
+      time: Math.floor(new Date(point.timestamp).getTime() / 1000),
+      value: point.price
+    }));
+
+    seriesRef.current.setData(data);
+    chartRef.current?.timeScale().fitContent();
+  }, [history]);
+
   return (
     <div className="rounded-xl border border-white/10 bg-black/25 p-4 shadow-inner shadow-black/20">
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-xs uppercase tracking-wide text-ink/65">Live Asset Diagram</p>
+          <p className="text-xs uppercase tracking-wide text-ink/65">Live Market Chart</p>
           <p className="mt-1 font-display text-2xl text-sand">{symbol}</p>
         </div>
         <div className="text-right">
-          <p className="font-display text-xl text-ink">
-            {series.latestPrice !== null ? series.latestPrice.toFixed(5) : "Loading..."}
+          <p className="font-display text-2xl text-ink">
+            {stats.last !== null ? stats.last.toFixed(5) : "Loading..."}
           </p>
-          <p className={`text-xs ${series.isUp ? "text-lime" : "text-alert"}`}>
-            {series.change >= 0 ? "+" : ""}
-            {series.change.toFixed(5)}
+          <p className={`text-xs ${stats.isUp ? "text-lime" : "text-alert"}`}>
+            {stats.change >= 0 ? "+" : ""}
+            {stats.change.toFixed(5)}
           </p>
         </div>
       </div>
 
-      <div className="mt-4 overflow-hidden rounded-xl border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.05),rgba(0,0,0,0.15))]">
-        <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} className="h-44 w-full">
-          <defs>
-            <linearGradient id="priceArea" x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0%" stopColor="rgba(163,255,111,0.45)" />
-              <stop offset="100%" stopColor="rgba(163,255,111,0.02)" />
-            </linearGradient>
-          </defs>
-
-          {[0.2, 0.4, 0.6, 0.8].map((ratio) => (
-            <line
-              key={ratio}
-              x1={innerPadding}
-              y1={chartHeight * ratio}
-              x2={chartWidth - innerPadding}
-              y2={chartHeight * ratio}
-              stroke="rgba(255,255,255,0.08)"
-              strokeDasharray="4 6"
-            />
-          ))}
-
-          {series.areaPath && <path d={series.areaPath} fill="url(#priceArea)" />}
-          {series.linePath && (
-            <path
-              d={series.linePath}
-              fill="none"
-              stroke={series.isUp ? "#a3ff6f" : "#ff6c5f"}
-              strokeWidth="3"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          )}
-        </svg>
-      </div>
+      <div
+        ref={containerRef}
+        className="mt-4 min-h-[260px] overflow-hidden rounded-xl border border-white/10"
+      />
 
       <div className="mt-3 flex items-center justify-between text-xs text-ink/65">
-        <span>Low {series.minPrice.toFixed(5)}</span>
-        <span>Window {history.length} ticks</span>
-        <span>High {series.maxPrice.toFixed(5)}</span>
+        <span>Low {stats.low.toFixed(5)}</span>
+        <span>{history.length} live ticks</span>
+        <span>High {stats.high.toFixed(5)}</span>
       </div>
     </div>
   );
@@ -199,6 +233,8 @@ export default function RiskCalculatorEntryForm() {
   useEffect(() => {
     const streamUrl = `${API_BASE_URL}/api/prices/stream?symbol=${encodeURIComponent(form.symbol)}`;
     const eventSource = new EventSource(streamUrl);
+
+    setPriceHistory([]);
 
     eventSource.onmessage = (event) => {
       try {
@@ -265,6 +301,17 @@ export default function RiskCalculatorEntryForm() {
   const onFieldChange = (event) => {
     const { name, value } = event.target;
     setForm((current) => ({ ...current, [name]: value }));
+  };
+
+  const applyLivePrice = (fieldName) => {
+    if (livePrice === null) {
+      return;
+    }
+
+    setForm((current) => ({
+      ...current,
+      [fieldName]: formatLivePrice(livePrice)
+    }));
   };
 
   const toggleEmotion = (emotion) => {
@@ -336,6 +383,8 @@ export default function RiskCalculatorEntryForm() {
   return (
     <form onSubmit={onSubmit} className="grid gap-6 lg:grid-cols-12">
       <section className="space-y-4 lg:col-span-8">
+        <TradingViewStyleChart history={priceHistory} symbol={form.symbol} />
+
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
           <label className="flex flex-col gap-1">
             <span className="text-xs uppercase tracking-wide text-ink/70">Symbol</span>
@@ -395,6 +444,8 @@ export default function RiskCalculatorEntryForm() {
             onChange={onFieldChange}
             step="0.00001"
             min="0"
+            actionLabel="Use Live"
+            onAction={() => applyLivePrice("entryPrice")}
           />
 
           <NumberField
@@ -404,6 +455,8 @@ export default function RiskCalculatorEntryForm() {
             onChange={onFieldChange}
             step="0.00001"
             min="0"
+            actionLabel="Use Live"
+            onAction={() => applyLivePrice("stopLoss")}
           />
 
           <NumberField
@@ -413,6 +466,8 @@ export default function RiskCalculatorEntryForm() {
             onChange={onFieldChange}
             step="0.00001"
             min="0"
+            actionLabel="Use Live"
+            onAction={() => applyLivePrice("takeProfit")}
           />
 
           <NumberField
@@ -450,6 +505,8 @@ export default function RiskCalculatorEntryForm() {
             step="0.00001"
             min="0"
             placeholder="Optional"
+            actionLabel="Use Live"
+            onAction={() => applyLivePrice("exitPrice")}
           />
 
           <TextField
@@ -533,12 +590,13 @@ export default function RiskCalculatorEntryForm() {
       </section>
 
       <aside className="space-y-3 lg:col-span-4">
-        <LiveAssetChart history={priceHistory} symbol={form.symbol} />
-
         <div className={metricClass}>
           <p className="text-xs uppercase tracking-wide text-ink/65">Live Price</p>
           <p className="mt-1 font-display text-2xl text-sand">
             {livePrice !== null ? livePrice.toFixed(5) : "Loading..."}
+          </p>
+          <p className="mt-2 text-xs text-ink/65">
+            Use the `Use Live` button on Entry, SL, TP, or Exit to copy the market price.
           </p>
           {priceError && <p className="mt-2 text-xs text-alert">{priceError}</p>}
         </div>
