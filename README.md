@@ -5,6 +5,7 @@ This starter includes:
 - `database/schema.sql`: PostgreSQL schema for users, accounts, trades, diary, cashflow, goals, and reporting views.
 - `backend/`: Node.js (Express) API with real-time price updates via Server-Sent Events.
 - `frontend/`: React + Tailwind app with `RiskCalculatorEntryForm` component.
+- `.github/workflows/deploy-frontend.yml`: auto-deploy frontend to GitHub Pages on push to `main`.
 
 ## Database schema outline
 
@@ -40,3 +41,15 @@ Optional frontend env:
 ```bash
 VITE_API_BASE_URL=http://localhost:4000
 ```
+
+## GitHub Pages (live frontend)
+
+After the GitHub Actions workflow succeeds, your frontend is available at:
+
+`https://imagine0creation-jpg.github.io/TradingLogWeb/`
+
+If your backend is hosted elsewhere, set repository variable:
+
+- `Settings -> Secrets and variables -> Actions -> Variables`
+- Name: `VITE_API_BASE_URL`
+- Value: your backend base URL (for example `https://your-backend.onrender.com`)
