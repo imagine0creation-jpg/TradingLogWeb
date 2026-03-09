@@ -4,8 +4,22 @@ import crypto from "node:crypto";
 
 const app = express();
 const port = process.env.PORT || 4000;
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 
-app.use(cors());
+const corsOptions = {
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error(`Origin not allowed: ${origin}`));
+  }
+};
+
+app.use(cors(corsOptions));
 app.use(express.json());
 
 const SYMBOLS = {
@@ -80,7 +94,12 @@ app.get("/api/prices/stream", (req, res) => {
 
   res.write(`data: ${JSON.stringify(toTickPayload(symbol, latestPrices.get(symbol)))}\n\n`);
 
+  const keepAlive = setInterval(() => {
+    res.write(": keepalive\n\n");
+  }, 15000);
+
   req.on("close", () => {
+    clearInterval(keepAlive);
     symbolSubscribers.delete(res);
   });
 });
