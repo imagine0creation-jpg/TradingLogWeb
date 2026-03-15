@@ -4,6 +4,43 @@ import crypto from "node:crypto";
 
 const app = express();
 const port = process.env.PORT || 4000;
+
+const OANDA_API_KEY = process.env.OANDA_API_KEY || "";
+const OANDA_ACCOUNT_ID = process.env.OANDA_ACCOUNT_ID || "";
+const OANDA_ENV = process.env.OANDA_ENV === "live" ? "live" : "practice";
+const OANDA_REST_HOST =
+  OANDA_ENV === "live" ? "https://api-fxtrade.oanda.com" : "https://api-fxpractice.oanda.com";
+const hasOandaCredentials = Boolean(OANDA_API_KEY && OANDA_ACCOUNT_ID);
+
+const SYMBOL_MAP = {
+  EURUSD: "EUR_USD",
+  GBPUSD: "GBP_USD",
+  USDJPY: "USD_JPY",
+  BTCUSD: "BTC_USD"
+};
+
+const OANDA_TO_APP = Object.fromEntries(
+  Object.entries(SYMBOL_MAP).map(([appSymbol, oandaSymbol]) => [oandaSymbol, appSymbol])
+);
+
+const TIMEFRAME_MAP = {
+  "1m": { granularity: "M1", seconds: 60 },
+  "5m": { granularity: "M5", seconds: 300 },
+  "15m": { granularity: "M15", seconds: 900 },
+  "30m": { granularity: "M30", seconds: 1800 },
+  "1h": { granularity: "H1", seconds: 3600 },
+  "4h": { granularity: "H4", seconds: 14400 },
+  "1d": { granularity: "D", seconds: 86400 },
+  "1w": { granularity: "W", seconds: 604800 }
+};
+
+const DEMO_BASE = {
+  EURUSD: 1.0894,
+  GBPUSD: 1.2741,
+  USDJPY: 149.28,
+  BTCUSD: 63850.22
+};
+
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
   .split(",")
   .map((origin) => origin.trim())
@@ -14,7 +51,6 @@ const corsOptions = {
     if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
-
     return callback(new Error(`Origin not allowed: ${origin}`));
   }
 };
@@ -22,48 +58,154 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json());
 
-const SYMBOLS = {
-  EURUSD: 1.0894,
-  GBPUSD: 1.2741,
-  USDJPY: 149.28,
-  BTCUSD: 63850.22
-};
-
-const latestPrices = new Map(Object.entries(SYMBOLS));
+const latestPrices = new Map(Object.entries(DEMO_BASE));
 const subscribersBySymbol = new Map();
 
-const ensureSymbol = (symbol) => symbol && latestPrices.has(symbol.toUpperCase());
+const ensureSymbol = (symbol) => symbol && Object.prototype.hasOwnProperty.call(SYMBOL_MAP, symbol);
 
-const toTickPayload = (symbol, price) => ({
+const toTickPayload = (symbol, price, timestamp = new Date().toISOString()) => ({
   symbol,
   price: Number(price.toFixed(5)),
-  timestamp: new Date().toISOString()
+  timestamp
 });
 
-const nextPrice = (currentPrice) => {
-  const randomMove = (Math.random() - 0.5) * 0.004;
-  return Math.max(currentPrice * (1 + randomMove), 0.00001);
+const notifySubscribers = (symbol, price, timestamp = new Date().toISOString()) => {
+  const symbolSubscribers = subscribersBySymbol.get(symbol);
+  if (!symbolSubscribers || symbolSubscribers.size === 0) {
+    return;
+  }
+
+  const payload = toTickPayload(symbol, price, timestamp);
+  for (const response of symbolSubscribers) {
+    response.write(`data: ${JSON.stringify(payload)}\n\n`);
+  }
+};
+
+const clampCount = (value, min = 10, max = 2000, fallback = 600) => {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(parsed, max));
+};
+
+const oandaRequest = async (path, params = {}) => {
+  const url = new URL(`${OANDA_REST_HOST}${path}`);
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) {
+      url.searchParams.set(key, String(value));
+    }
+  });
+
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${OANDA_API_KEY}`,
+      "Content-Type": "application/json"
+    }
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`OANDA request failed (${response.status}): ${body}`);
+  }
+
+  return response.json();
+};
+
+const generateDemoBars = (symbol, timeframe, count) => {
+  const timeframeConfig = TIMEFRAME_MAP[timeframe] || TIMEFRAME_MAP["1m"];
+  const now = Math.floor(Date.now() / 1000);
+  const bars = [];
+  let price = latestPrices.get(symbol) ?? DEMO_BASE[symbol] ?? 1;
+  let cursor = now - count * timeframeConfig.seconds;
+
+  for (let i = 0; i < count; i += 1) {
+    const open = price;
+    const moveA = (Math.random() - 0.5) * 0.01;
+    const moveB = (Math.random() - 0.5) * 0.01;
+    const high = Math.max(open * (1 + moveA), open * (1 + moveB), open);
+    const low = Math.min(open * (1 + moveA), open * (1 + moveB), open);
+    const close = Math.max(low, Math.min(high, open * (1 + (Math.random() - 0.5) * 0.01)));
+
+    bars.push({
+      time: cursor,
+      open: Number(open.toFixed(5)),
+      high: Number(high.toFixed(5)),
+      low: Number(low.toFixed(5)),
+      close: Number(close.toFixed(5))
+    });
+
+    price = close;
+    cursor += timeframeConfig.seconds;
+  }
+
+  latestPrices.set(symbol, price);
+  return bars;
+};
+
+let pricingRefreshInFlight = false;
+
+const refreshOandaPrices = async () => {
+  if (!hasOandaCredentials || pricingRefreshInFlight) {
+    return;
+  }
+
+  pricingRefreshInFlight = true;
+  try {
+    const instruments = Object.values(SYMBOL_MAP).join(",");
+    const payload = await oandaRequest(`/v3/accounts/${OANDA_ACCOUNT_ID}/pricing`, { instruments });
+    const prices = Array.isArray(payload.prices) ? payload.prices : [];
+
+    for (const entry of prices) {
+      const appSymbol = OANDA_TO_APP[entry.instrument];
+      if (!appSymbol) {
+        continue;
+      }
+
+      const bid = Number(entry.closeoutBid);
+      const ask = Number(entry.closeoutAsk);
+      const mid = Number.isFinite(bid) && Number.isFinite(ask) ? (bid + ask) / 2 : Number(entry.bids?.[0]?.price);
+      if (!Number.isFinite(mid)) {
+        continue;
+      }
+
+      latestPrices.set(appSymbol, mid);
+      notifySubscribers(appSymbol, mid, entry.time || new Date().toISOString());
+    }
+  } catch (error) {
+    console.error("OANDA pricing refresh error:", error.message);
+  } finally {
+    pricingRefreshInFlight = false;
+  }
+};
+
+const refreshDemoPrices = () => {
+  for (const [symbol, currentPrice] of latestPrices.entries()) {
+    const randomMove = (Math.random() - 0.5) * 0.004;
+    const updated = Math.max(currentPrice * (1 + randomMove), 0.00001);
+    latestPrices.set(symbol, updated);
+    notifySubscribers(symbol, updated);
+  }
 };
 
 setInterval(() => {
-  for (const [symbol, currentPrice] of latestPrices.entries()) {
-    const updated = nextPrice(currentPrice);
-    latestPrices.set(symbol, updated);
-
-    const payload = toTickPayload(symbol, updated);
-    const symbolSubscribers = subscribersBySymbol.get(symbol);
-    if (!symbolSubscribers || symbolSubscribers.size === 0) {
-      continue;
-    }
-
-    for (const response of symbolSubscribers) {
-      response.write(`data: ${JSON.stringify(payload)}\n\n`);
-    }
+  if (hasOandaCredentials) {
+    refreshOandaPrices();
+  } else {
+    refreshDemoPrices();
   }
 }, 1000);
 
+if (hasOandaCredentials) {
+  refreshOandaPrices();
+}
+
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "trading-log-backend" });
+  res.json({
+    ok: true,
+    service: "trading-log-backend",
+    priceSource: hasOandaCredentials ? "oanda" : "demo"
+  });
 });
 
 app.get("/api/prices/latest", (req, res) => {
@@ -72,7 +214,10 @@ app.get("/api/prices/latest", (req, res) => {
     return res.status(400).json({ error: `Unsupported symbol: ${symbol}` });
   }
 
-  return res.json(toTickPayload(symbol, latestPrices.get(symbol)));
+  return res.json({
+    ...toTickPayload(symbol, latestPrices.get(symbol) ?? DEMO_BASE[symbol] ?? 1),
+    source: hasOandaCredentials ? "oanda" : "demo"
+  });
 });
 
 app.get("/api/prices/stream", (req, res) => {
@@ -92,7 +237,11 @@ app.get("/api/prices/stream", (req, res) => {
   const symbolSubscribers = subscribersBySymbol.get(symbol);
   symbolSubscribers.add(res);
 
-  res.write(`data: ${JSON.stringify(toTickPayload(symbol, latestPrices.get(symbol)))}\n\n`);
+  res.write(
+    `data: ${JSON.stringify(
+      toTickPayload(symbol, latestPrices.get(symbol) ?? DEMO_BASE[symbol] ?? 1)
+    )}\n\n`
+  );
 
   const keepAlive = setInterval(() => {
     res.write(": keepalive\n\n");
@@ -102,6 +251,58 @@ app.get("/api/prices/stream", (req, res) => {
     clearInterval(keepAlive);
     symbolSubscribers.delete(res);
   });
+});
+
+app.get("/api/history", async (req, res) => {
+  const symbol = (req.query.symbol || "EURUSD").toUpperCase();
+  const timeframe = (req.query.timeframe || "1m").toLowerCase();
+  const count = clampCount(req.query.count, 10, 2000, 600);
+
+  if (!ensureSymbol(symbol)) {
+    return res.status(400).json({ error: `Unsupported symbol: ${symbol}` });
+  }
+  if (!TIMEFRAME_MAP[timeframe]) {
+    return res.status(400).json({ error: `Unsupported timeframe: ${timeframe}` });
+  }
+
+  if (!hasOandaCredentials) {
+    const bars = generateDemoBars(symbol, timeframe, count);
+    return res.json({ symbol, timeframe, source: "demo", bars });
+  }
+
+  try {
+    const oandaSymbol = SYMBOL_MAP[symbol];
+    const granularity = TIMEFRAME_MAP[timeframe].granularity;
+    const payload = await oandaRequest(`/v3/instruments/${oandaSymbol}/candles`, {
+      granularity,
+      count,
+      price: "M"
+    });
+
+    const bars = (payload.candles || [])
+      .filter((candle) => candle.complete && candle.mid)
+      .map((candle) => {
+        const epoch = Math.floor(new Date(candle.time).getTime() / 1000);
+        return {
+          time: epoch,
+          open: Number(candle.mid.o),
+          high: Number(candle.mid.h),
+          low: Number(candle.mid.l),
+          close: Number(candle.mid.c)
+        };
+      })
+      .filter((bar) => Number.isFinite(bar.time));
+
+    if (bars.length > 0) {
+      latestPrices.set(symbol, bars[bars.length - 1].close);
+    }
+
+    return res.json({ symbol, timeframe, source: "oanda", bars });
+  } catch (error) {
+    console.error("History fetch failed, falling back to demo:", error.message);
+    const bars = generateDemoBars(symbol, timeframe, count);
+    return res.json({ symbol, timeframe, source: "demo-fallback", bars });
+  }
 });
 
 app.post("/api/trades", (req, res) => {
@@ -118,4 +319,5 @@ app.post("/api/trades", (req, res) => {
 
 app.listen(port, () => {
   console.log(`Backend listening at http://localhost:${port}`);
+  console.log(`Price source mode: ${hasOandaCredentials ? "OANDA" : "DEMO"}`);
 });

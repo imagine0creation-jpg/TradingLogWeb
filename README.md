@@ -29,6 +29,14 @@ npm install
 npm run dev
 ```
 
+Backend env for OANDA (recommended for real history/prices):
+
+```bash
+OANDA_ENV=practice
+OANDA_ACCOUNT_ID=your-account-id
+OANDA_API_KEY=your-api-key
+```
+
 Frontend:
 
 ```bash
@@ -67,4 +75,7 @@ Backend blueprint config lives in `render.yaml`.
    - `VITE_API_BASE_URL=https://tradinglogweb-backend.onrender.com`
 6. Re-run the GitHub Pages workflow so the frontend points to the live backend.
 
-The backend currently allows requests from `https://imagine0creation-jpg.github.io` via `ALLOWED_ORIGINS`.
+The backend allows requests from `https://imagine0creation-jpg.github.io` via `ALLOWED_ORIGINS`.
+
+If `OANDA_ACCOUNT_ID` and `OANDA_API_KEY` are set, `/api/history` and live prices use OANDA.
+If missing or unavailable, backend falls back to demo data.

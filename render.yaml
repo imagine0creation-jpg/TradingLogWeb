@@ -12,3 +12,9 @@ services:
         value: 20.11.1
       - key: ALLOWED_ORIGINS
         value: https://imagine0creation-jpg.github.io
+      - key: OANDA_ENV
+        value: practice
+      - key: OANDA_ACCOUNT_ID
+        sync: false
+      - key: OANDA_API_KEY
+        sync: false

@@ -3,8 +3,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
 const SYMBOL_OPTIONS = ["EURUSD", "GBPUSD", "USDJPY", "BTCUSD"];
-const MAX_HISTORY_POINTS = 7200;
 const STORAGE_PREFIX = "trading-chart-drawings";
+const MAX_BAR_POINTS = 1200;
 const TIMEFRAME_OPTIONS = [
   { id: "1m", label: "1m", seconds: 60 },
   { id: "5m", label: "5m", seconds: 300 },
@@ -21,10 +21,8 @@ const DEMO_SYMBOLS = {
   USDJPY: 149.28,
   BTCUSD: 63850.22
 };
-const TICK_STORAGE_PREFIX = "trading-chart-ticks";
 
-const createId = () =>
-  `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+const createId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 const toNumber = (value) => {
   const parsed = Number(value);
@@ -32,73 +30,6 @@ const toNumber = (value) => {
 };
 
 const formatPrice = (value) => (value === null ? "Loading..." : value.toFixed(5));
-
-const aggregateBars = (ticks, timeframeSeconds) => {
-  if (ticks.length === 0) {
-    return [];
-  }
-
-  const buckets = new Map();
-
-  for (const tick of ticks) {
-    if (!Number.isFinite(tick.epochSeconds)) {
-      continue;
-    }
-
-    const bucketTime = Math.floor(tick.epochSeconds / timeframeSeconds) * timeframeSeconds;
-    const existing = buckets.get(bucketTime);
-
-    if (!existing) {
-      buckets.set(bucketTime, {
-        time: bucketTime,
-        open: tick.price,
-        high: tick.price,
-        low: tick.price,
-        close: tick.price
-      });
-      continue;
-    }
-
-    existing.high = Math.max(existing.high, tick.price);
-    existing.low = Math.min(existing.low, tick.price);
-    existing.close = tick.price;
-  }
-
-  return Array.from(buckets.values()).sort((a, b) => a.time - b.time);
-};
-
-const buildDemoHistory = (symbol) => {
-  const now = Math.floor(Date.now() / 1000);
-  const points = new Map();
-  let price = DEMO_SYMBOLS[symbol] ?? 1;
-
-  const addPoint = (timestamp, volatility) => {
-    const drift = (Math.random() - 0.5) * volatility;
-    price = Math.max(price * (1 + drift), 0.00001);
-    points.set(timestamp, {
-      price: Number(price.toFixed(5)),
-      timestamp: new Date(timestamp * 1000).toISOString(),
-      epochSeconds: timestamp
-    });
-  };
-
-  const hourlyStart = now - 140 * 24 * 3600;
-  for (let t = hourlyStart; t < now - 7 * 24 * 3600; t += 3600) {
-    addPoint(t, 0.006);
-  }
-
-  const fiveMinuteStart = now - 7 * 24 * 3600;
-  for (let t = fiveMinuteStart; t < now - 12 * 3600; t += 300) {
-    addPoint(t, 0.0035);
-  }
-
-  const oneMinuteStart = now - 12 * 3600;
-  for (let t = oneMinuteStart; t <= now; t += 60) {
-    addPoint(t, 0.0025);
-  }
-
-  return Array.from(points.values()).sort((a, b) => a.epochSeconds - b.epochSeconds);
-};
 
 const formatBarTime = (epochSeconds, timeframeLabel) => {
   if (!Number.isFinite(epochSeconds)) {
@@ -111,6 +42,70 @@ const formatBarTime = (epochSeconds, timeframeLabel) => {
   }
 
   return date.toLocaleString();
+};
+
+const makeDemoBars = (symbol, timeframeSeconds, count = 400) => {
+  const now = Math.floor(Date.now() / 1000);
+  const bars = [];
+  let price = DEMO_SYMBOLS[symbol] ?? 1;
+  let cursor = now - count * timeframeSeconds;
+
+  for (let i = 0; i < count; i += 1) {
+    const open = price;
+    const moveA = (Math.random() - 0.5) * 0.01;
+    const moveB = (Math.random() - 0.5) * 0.01;
+    const high = Math.max(open * (1 + moveA), open * (1 + moveB), open);
+    const low = Math.min(open * (1 + moveA), open * (1 + moveB), open);
+    const close = Math.max(low, Math.min(high, open * (1 + (Math.random() - 0.5) * 0.01)));
+
+    bars.push({
+      time: cursor,
+      open: Number(open.toFixed(5)),
+      high: Number(high.toFixed(5)),
+      low: Number(low.toFixed(5)),
+      close: Number(close.toFixed(5))
+    });
+
+    price = close;
+    cursor += timeframeSeconds;
+  }
+
+  return bars;
+};
+
+const upsertBarFromTick = (bars, price, epochSeconds, timeframeSeconds) => {
+  const bucketTime = Math.floor(epochSeconds / timeframeSeconds) * timeframeSeconds;
+  const nextBars = [...bars];
+  const lastBar = nextBars[nextBars.length - 1];
+
+  if (!lastBar) {
+    return [
+      {
+        time: bucketTime,
+        open: price,
+        high: price,
+        low: price,
+        close: price
+      }
+    ];
+  }
+
+  if (lastBar.time === bucketTime) {
+    lastBar.high = Math.max(lastBar.high, price);
+    lastBar.low = Math.min(lastBar.low, price);
+    lastBar.close = price;
+    return nextBars.slice(-MAX_BAR_POINTS);
+  }
+
+  nextBars.push({
+    time: bucketTime,
+    open: lastBar.close,
+    high: price,
+    low: price,
+    close: price
+  });
+
+  return nextBars.slice(-MAX_BAR_POINTS);
 };
 
 function ToolbarButton({ active = false, children, ...props }) {
@@ -141,10 +136,7 @@ function ChartOverlay({
   onPointerUp,
   projectDrawing
 }) {
-  const projectedDrawings = drawings
-    .map(projectDrawing)
-    .filter(Boolean);
-
+  const projectedDrawings = drawings.map(projectDrawing).filter(Boolean);
   const projectedDraft = draft ? projectDrawing(draft) : null;
 
   return (
@@ -248,9 +240,7 @@ function ChartOverlay({
         )
       ) : null}
 
-      {mode !== "none" ? (
-        <rect x="0" y="0" width={width} height={height} fill="transparent" />
-      ) : null}
+      {mode !== "none" ? <rect x="0" y="0" width={width} height={height} fill="transparent" /> : null}
     </svg>
   );
 }
@@ -259,7 +249,9 @@ export default function RiskCalculatorEntryForm() {
   const [symbol, setSymbol] = useState("EURUSD");
   const [timeframe, setTimeframe] = useState("1m");
   const [livePrice, setLivePrice] = useState(null);
-  const [priceHistory, setPriceHistory] = useState([]);
+  const [bars, setBars] = useState([]);
+  const [historySource, setHistorySource] = useState("backend");
+  const [historyError, setHistoryError] = useState("");
   const [priceError, setPriceError] = useState("");
   const [mode, setMode] = useState("trend");
   const [drawings, setDrawings] = useState([]);
@@ -273,41 +265,42 @@ export default function RiskCalculatorEntryForm() {
   const seriesRef = useRef(null);
   const drawingStartRef = useRef(null);
   const demoTimerRef = useRef(null);
+  const livePriceRef = useRef(null);
+  const barsRef = useRef([]);
 
   const storageKey = `${STORAGE_PREFIX}:${symbol}`;
-  const tickStorageKey = `${TICK_STORAGE_PREFIX}:${symbol}`;
   const selectedTimeframe = useMemo(
     () => TIMEFRAME_OPTIONS.find((option) => option.id === timeframe) || TIMEFRAME_OPTIONS[0],
     [timeframe]
   );
 
-  const timeframeBars = useMemo(
-    () => aggregateBars(priceHistory, selectedTimeframe.seconds),
-    [priceHistory, selectedTimeframe.seconds]
-  );
   const displaySeries = useMemo(
-    () => timeframeBars.map((bar) => ({ time: bar.time, value: bar.close })),
-    [timeframeBars]
+    () => bars.map((bar) => ({ time: bar.time, value: bar.close })),
+    [bars]
   );
-  const recentHistoryBars = useMemo(() => timeframeBars.slice(-24).reverse(), [timeframeBars]);
+  const recentHistoryBars = useMemo(() => bars.slice(-24).reverse(), [bars]);
 
   const stats = useMemo(() => {
-    if (timeframeBars.length === 0) {
+    if (bars.length === 0) {
       return { low: 0, high: 0, change: 0, isUp: true };
     }
 
-    const prices = timeframeBars.map((bar) => bar.close);
-    const first = prices[0];
-    const last = prices[prices.length - 1];
-    const change = last - first;
-
+    const closes = bars.map((bar) => bar.close);
     return {
-      low: Math.min(...prices),
-      high: Math.max(...prices),
-      change,
-      isUp: change >= 0
+      low: Math.min(...bars.map((bar) => bar.low)),
+      high: Math.max(...bars.map((bar) => bar.high)),
+      change: closes[closes.length - 1] - closes[0],
+      isUp: closes[closes.length - 1] - closes[0] >= 0
     };
-  }, [timeframeBars]);
+  }, [bars]);
+
+  useEffect(() => {
+    livePriceRef.current = livePrice;
+  }, [livePrice]);
+
+  useEffect(() => {
+    barsRef.current = bars;
+  }, [bars]);
 
   useEffect(() => {
     const raw = window.localStorage.getItem(storageKey);
@@ -332,34 +325,6 @@ export default function RiskCalculatorEntryForm() {
   }, [drawings, storageKey]);
 
   useEffect(() => {
-    const raw = window.localStorage.getItem(tickStorageKey);
-    if (!raw) {
-      setPriceHistory([]);
-      return;
-    }
-
-    try {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        setPriceHistory(parsed.slice(-MAX_HISTORY_POINTS));
-      } else {
-        setPriceHistory([]);
-      }
-    } catch (_error) {
-      setPriceHistory([]);
-    }
-  }, [tickStorageKey]);
-
-  useEffect(() => {
-    if (priceHistory.length > 0) {
-      window.localStorage.setItem(
-        tickStorageKey,
-        JSON.stringify(priceHistory.slice(-MAX_HISTORY_POINTS))
-      );
-    }
-  }, [priceHistory, tickStorageKey]);
-
-  useEffect(() => {
     if (!chartHostRef.current) {
       return undefined;
     }
@@ -376,9 +341,7 @@ export default function RiskCalculatorEntryForm() {
         vertLines: { color: "rgba(255,255,255,0.04)" },
         horzLines: { color: "rgba(255,255,255,0.06)" }
       },
-      rightPriceScale: {
-        borderColor: "rgba(255,255,255,0.08)"
-      },
+      rightPriceScale: { borderColor: "rgba(255,255,255,0.08)" },
       timeScale: {
         borderColor: "rgba(255,255,255,0.08)",
         timeVisible: true,
@@ -440,48 +403,80 @@ export default function RiskCalculatorEntryForm() {
   }, [selectedTimeframe.seconds]);
 
   useEffect(() => {
+    let cancelled = false;
+
+    const loadHistory = async () => {
+      setHistoryError("");
+      try {
+        const response = await fetch(
+          `${API_BASE_URL}/api/history?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(
+            timeframe
+          )}&count=600`
+        );
+
+        if (!response.ok) {
+          throw new Error("history fetch failed");
+        }
+
+        const payload = await response.json();
+        if (cancelled) {
+          return;
+        }
+
+        const nextBars = Array.isArray(payload.bars)
+          ? payload.bars
+              .map((bar) => ({
+                time: toNumber(bar.time),
+                open: toNumber(bar.open),
+                high: toNumber(bar.high),
+                low: toNumber(bar.low),
+                close: toNumber(bar.close)
+              }))
+              .filter((bar) => Number.isFinite(bar.time))
+          : [];
+
+        if (nextBars.length === 0) {
+          throw new Error("empty bars");
+        }
+
+        setBars(nextBars.slice(-MAX_BAR_POINTS));
+        setHistorySource(payload.source || "backend");
+        setLivePrice(nextBars[nextBars.length - 1].close);
+      } catch (_error) {
+        if (cancelled) {
+          return;
+        }
+
+        const demoBars = makeDemoBars(symbol, selectedTimeframe.seconds, 400);
+        setBars(demoBars);
+        setHistorySource("demo");
+        setLivePrice(demoBars[demoBars.length - 1]?.close ?? null);
+        setHistoryError("History API unavailable. Showing demo history.");
+      }
+    };
+
+    loadHistory();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [symbol, timeframe, selectedTimeframe.seconds]);
+
+  useEffect(() => {
     const streamUrl = `${API_BASE_URL}/api/prices/stream?symbol=${encodeURIComponent(symbol)}`;
     const eventSource = new EventSource(streamUrl);
     let hasReceivedLiveTick = false;
     let fallbackTimer = null;
 
-    setLivePrice(null);
     setPriceError("");
     setFeedMode("live");
 
-    const pushTick = (nextPrice, timestamp = new Date().toISOString()) => {
-      const epochSeconds = Math.floor(new Date(timestamp).getTime() / 1000);
+    const applyTick = (nextPrice, timestamp = new Date().toISOString()) => {
+      const epochSeconds = Math.floor(new Date(timestamp).getTime() / 1000) || Math.floor(Date.now() / 1000);
       setLivePrice(nextPrice);
-      setPriceHistory((current) => {
-        const nextHistory = [...current, { price: nextPrice, timestamp, epochSeconds }];
-        return nextHistory.slice(-MAX_HISTORY_POINTS);
-      });
-    };
-
-    const startDemoFeed = () => {
-      if (fallbackTimer) {
-        window.clearTimeout(fallbackTimer);
-        fallbackTimer = null;
-      }
-
-      if (demoTimerRef.current) {
-        return;
-      }
-
-      setPriceHistory((current) => (current.length === 0 ? buildDemoHistory(symbol) : current));
-
-      const basePrice = DEMO_SYMBOLS[symbol] ?? 1;
-      let lastPrice = livePrice ?? basePrice;
-
-      setFeedMode("demo");
-      setPriceError("Backend offline. Showing demo live feed so chart and drawings still work.");
-      pushTick(lastPrice);
-
-      demoTimerRef.current = window.setInterval(() => {
-        const drift = (Math.random() - 0.5) * 0.004;
-        lastPrice = Math.max(lastPrice * (1 + drift), 0.00001);
-        pushTick(Number(lastPrice.toFixed(5)));
-      }, 1000);
+      setBars((current) =>
+        upsertBarFromTick(current, nextPrice, epochSeconds, selectedTimeframe.seconds)
+      );
     };
 
     const stopDemoFeed = () => {
@@ -491,19 +486,37 @@ export default function RiskCalculatorEntryForm() {
       }
     };
 
+    const startDemoFeed = () => {
+      if (demoTimerRef.current) {
+        return;
+      }
+
+      if (fallbackTimer) {
+        window.clearTimeout(fallbackTimer);
+        fallbackTimer = null;
+      }
+
+      setFeedMode("demo");
+      setPriceError("Live stream unavailable. Using demo live ticks.");
+
+      let lastPrice =
+        livePriceRef.current ?? barsRef.current[barsRef.current.length - 1]?.close ?? DEMO_SYMBOLS[symbol] ?? 1;
+      demoTimerRef.current = window.setInterval(() => {
+        const drift = (Math.random() - 0.5) * 0.004;
+        lastPrice = Math.max(lastPrice * (1 + drift), 0.00001);
+        applyTick(Number(lastPrice.toFixed(5)));
+      }, 1000);
+    };
+
     eventSource.onmessage = (event) => {
       try {
         const payload = JSON.parse(event.data);
         const nextPrice = toNumber(payload.price);
         hasReceivedLiveTick = true;
-        if (fallbackTimer) {
-          window.clearTimeout(fallbackTimer);
-          fallbackTimer = null;
-        }
         stopDemoFeed();
         setFeedMode("live");
         setPriceError("");
-        pushTick(nextPrice, payload.timestamp);
+        applyTick(nextPrice, payload.timestamp);
       } catch (_error) {
         setPriceError("Unable to parse live price payload.");
       }
@@ -530,7 +543,7 @@ export default function RiskCalculatorEntryForm() {
       eventSource.close();
       stopDemoFeed();
     };
-  }, [symbol]);
+  }, [symbol, selectedTimeframe.seconds]);
 
   useEffect(() => {
     if (!seriesRef.current) {
@@ -601,13 +614,7 @@ export default function RiskCalculatorEntryForm() {
       if (y === null) {
         return null;
       }
-
-      return {
-        id: drawing.id,
-        type: "horizontal",
-        color: drawing.color,
-        y
-      };
+      return { id: drawing.id, type: "horizontal", color: drawing.color, y };
     }
 
     const points = drawing.points
@@ -619,7 +626,6 @@ export default function RiskCalculatorEntryForm() {
         if (x === null || y === null) {
           return null;
         }
-
         return { x, y };
       })
       .filter(Boolean);
@@ -628,48 +634,28 @@ export default function RiskCalculatorEntryForm() {
       return null;
     }
 
-    return {
-      id: drawing.id,
-      type: "freehand",
-      color: drawing.color,
-      points
-    };
+    return { id: drawing.id, type: "freehand", color: drawing.color, points };
   };
 
   const startDrawing = (point) => {
     if (mode === "trend") {
-      const nextDraft = {
-        id: createId(),
-        type: "trend",
-        color: "#f4e5b3",
-        start: point,
-        end: point
-      };
+      const nextDraft = { id: createId(), type: "trend", color: "#f4e5b3", start: point, end: point };
       drawingStartRef.current = point;
       setDraft(nextDraft);
       return;
     }
 
     if (mode === "horizontal") {
-      const nextDrawing = {
-        id: createId(),
-        type: "horizontal",
-        color: "#7dd3fc",
-        price: point.price
-      };
-      setDrawings((current) => [...current, nextDrawing]);
+      setDrawings((current) => [
+        ...current,
+        { id: createId(), type: "horizontal", color: "#7dd3fc", price: point.price }
+      ]);
       setStatusMessage("Horizontal line saved.");
       return;
     }
 
     if (mode === "freehand") {
-      const nextDraft = {
-        id: createId(),
-        type: "freehand",
-        color: "#ff8b7d",
-        points: [point]
-      };
-      setDraft(nextDraft);
+      setDraft({ id: createId(), type: "freehand", color: "#ff8b7d", points: [point] });
     }
   };
 
@@ -684,10 +670,7 @@ export default function RiskCalculatorEntryForm() {
     }
 
     if (draft.type === "freehand") {
-      setDraft((current) => ({
-        ...current,
-        points: [...current.points, point]
-      }));
+      setDraft((current) => ({ ...current, points: [...current.points, point] }));
     }
   };
 
@@ -697,11 +680,7 @@ export default function RiskCalculatorEntryForm() {
     }
 
     if (draft.type === "trend") {
-      const finalized = {
-        ...draft,
-        start: drawingStartRef.current || draft.start
-      };
-      setDrawings((current) => [...current, finalized]);
+      setDrawings((current) => [...current, { ...draft, start: drawingStartRef.current || draft.start }]);
       setStatusMessage("Trend line saved.");
     }
 
@@ -742,38 +721,30 @@ export default function RiskCalculatorEntryForm() {
     updateDrawing(point);
   };
 
-  const onPointerUp = () => {
-    commitDrawing();
-  };
-
+  const onPointerUp = () => commitDrawing();
   const clearDrawings = () => {
     setDrawings([]);
     setDraft(null);
     setStatusMessage("Drawings cleared.");
   };
-
   const undoLast = () => {
     setDrawings((current) => current.slice(0, -1));
     setStatusMessage("Last drawing removed.");
   };
-
   const saveDrawings = () => {
     window.localStorage.setItem(storageKey, JSON.stringify(drawings));
     setStatusMessage("Drawings saved to this device.");
   };
 
   return (
-    <div className="grid gap-6 xl:grid-cols-[1fr_300px]">
+    <div className="grid gap-6 xl:grid-cols-[1fr_320px]">
       <section className="rounded-[28px] border border-white/10 bg-panel/90 p-4 shadow-card backdrop-blur md:p-6">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <p className="text-xs uppercase tracking-[0.3em] text-ink/55">Live Workspace</p>
-            <h2 className="mt-2 font-display text-3xl uppercase tracking-wide text-sand">
-              Draw On The Market
-            </h2>
+            <h2 className="mt-2 font-display text-3xl uppercase tracking-wide text-sand">Draw On The Market</h2>
             <p className="mt-2 max-w-2xl text-sm text-ink/70">
-              Pick a symbol, watch the live stream, draw directly on the chart, and keep your
-              annotations saved on this device.
+              OANDA history + live stream when available, with drawing tools that stay usable across all timeframes.
             </p>
           </div>
 
@@ -819,18 +790,10 @@ export default function RiskCalculatorEntryForm() {
         </div>
 
         <div className="mt-5 flex flex-wrap gap-2">
-          <ToolbarButton active={mode === "none"} onClick={() => setMode("none")}>
-            Pan
-          </ToolbarButton>
-          <ToolbarButton active={mode === "trend"} onClick={() => setMode("trend")}>
-            Trend Line
-          </ToolbarButton>
-          <ToolbarButton active={mode === "horizontal"} onClick={() => setMode("horizontal")}>
-            Horizontal
-          </ToolbarButton>
-          <ToolbarButton active={mode === "freehand"} onClick={() => setMode("freehand")}>
-            Freehand
-          </ToolbarButton>
+          <ToolbarButton active={mode === "none"} onClick={() => setMode("none")}>Pan</ToolbarButton>
+          <ToolbarButton active={mode === "trend"} onClick={() => setMode("trend")}>Trend Line</ToolbarButton>
+          <ToolbarButton active={mode === "horizontal"} onClick={() => setMode("horizontal")}>Horizontal</ToolbarButton>
+          <ToolbarButton active={mode === "freehand"} onClick={() => setMode("freehand")}>Freehand</ToolbarButton>
           <ToolbarButton onClick={undoLast}>Undo</ToolbarButton>
           <ToolbarButton onClick={clearDrawings}>Clear</ToolbarButton>
           <ToolbarButton onClick={saveDrawings}>Save</ToolbarButton>
@@ -884,17 +847,8 @@ export default function RiskCalculatorEntryForm() {
         </div>
 
         <div className="rounded-[24px] border border-white/10 bg-panel/90 p-5 shadow-card backdrop-blur">
-          <p className="text-xs uppercase tracking-[0.3em] text-ink/55">Drawing Guide</p>
-          <div className="mt-4 space-y-3 text-sm text-ink/72">
-            <p>`Trend Line`: press, drag, release.</p>
-            <p>`Horizontal`: click once at the price level.</p>
-            <p>`Freehand`: press, draw, release.</p>
-            <p>`Save`: stores drawings in your browser for the current symbol.</p>
-          </div>
-        </div>
-
-        <div className="rounded-[24px] border border-white/10 bg-panel/90 p-5 shadow-card backdrop-blur">
           <p className="text-xs uppercase tracking-[0.3em] text-ink/55">History Record</p>
+          <p className="mt-2 text-xs text-ink/60">Source: {historySource}</p>
           <div className="mt-4 max-h-72 overflow-auto rounded-xl border border-white/10 bg-black/25">
             <table className="w-full border-collapse text-xs text-ink/80">
               <thead className="sticky top-0 bg-[#121820] text-ink/65">
@@ -921,7 +875,7 @@ export default function RiskCalculatorEntryForm() {
                 {recentHistoryBars.length === 0 ? (
                   <tr>
                     <td colSpan={5} className="px-2 py-3 text-center text-ink/60">
-                      Waiting for historical bars...
+                      Waiting for history bars...
                     </td>
                   </tr>
                 ) : null}
@@ -933,6 +887,7 @@ export default function RiskCalculatorEntryForm() {
         <div className="rounded-[24px] border border-white/10 bg-panel/90 p-5 shadow-card backdrop-blur">
           <p className="text-xs uppercase tracking-[0.3em] text-ink/55">Status</p>
           <p className="mt-3 text-sm text-ink/75">{statusMessage}</p>
+          {historyError ? <p className="mt-3 text-sm text-alert">{historyError}</p> : null}
           {priceError ? <p className="mt-3 text-sm text-alert">{priceError}</p> : null}
           <p className="mt-3 text-xs text-ink/55">
             Current source: {feedMode === "live" ? "backend stream" : "browser demo simulation"}
