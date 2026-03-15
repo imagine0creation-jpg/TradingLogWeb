@@ -169,7 +169,7 @@ export default function RiskCalculatorEntryForm() {
   const [livePrice, setLivePrice] = useState(null);
   const [priceHistory, setPriceHistory] = useState([]);
   const [priceError, setPriceError] = useState("");
-  const [mode, setMode] = useState("none");
+  const [mode, setMode] = useState("trend");
   const [drawings, setDrawings] = useState([]);
   const [draft, setDraft] = useState(null);
   const [statusMessage, setStatusMessage] = useState("Drawings save automatically on this device.");
@@ -295,6 +295,7 @@ export default function RiskCalculatorEntryForm() {
     const streamUrl = `${API_BASE_URL}/api/prices/stream?symbol=${encodeURIComponent(symbol)}`;
     const eventSource = new EventSource(streamUrl);
     let hasReceivedLiveTick = false;
+    let fallbackTimer = null;
 
     setPriceHistory([]);
     setLivePrice(null);
@@ -310,6 +311,11 @@ export default function RiskCalculatorEntryForm() {
     };
 
     const startDemoFeed = () => {
+      if (fallbackTimer) {
+        window.clearTimeout(fallbackTimer);
+        fallbackTimer = null;
+      }
+
       if (demoTimerRef.current) {
         return;
       }
@@ -340,6 +346,10 @@ export default function RiskCalculatorEntryForm() {
         const payload = JSON.parse(event.data);
         const nextPrice = toNumber(payload.price);
         hasReceivedLiveTick = true;
+        if (fallbackTimer) {
+          window.clearTimeout(fallbackTimer);
+          fallbackTimer = null;
+        }
         stopDemoFeed();
         setFeedMode("live");
         setPriceError("");
@@ -348,6 +358,12 @@ export default function RiskCalculatorEntryForm() {
         setPriceError("Unable to parse live price payload.");
       }
     };
+
+    fallbackTimer = window.setTimeout(() => {
+      if (!hasReceivedLiveTick) {
+        startDemoFeed();
+      }
+    }, 2500);
 
     eventSource.onerror = () => {
       if (!hasReceivedLiveTick) {
@@ -358,6 +374,9 @@ export default function RiskCalculatorEntryForm() {
     };
 
     return () => {
+      if (fallbackTimer) {
+        window.clearTimeout(fallbackTimer);
+      }
       eventSource.close();
       stopDemoFeed();
     };
