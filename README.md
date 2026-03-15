@@ -29,12 +29,10 @@ npm install
 npm run dev
 ```
 
-Backend env for OANDA (recommended for real history/prices):
+Backend env for TwelveData (recommended for real history/prices):
 
 ```bash
-OANDA_ENV=practice
-OANDA_ACCOUNT_ID=your-account-id
-OANDA_API_KEY=your-api-key
+TWELVEDATA_API_KEY=your-api-key
 ```
 
 Frontend:
@@ -77,5 +75,5 @@ Backend blueprint config lives in `render.yaml`.
 
 The backend allows requests from `https://imagine0creation-jpg.github.io` via `ALLOWED_ORIGINS`.
 
-If `OANDA_ACCOUNT_ID` and `OANDA_API_KEY` are set, `/api/history` and live prices use OANDA.
+If `TWELVEDATA_API_KEY` is set, `/api/history` and live prices use TwelveData.
 If missing or unavailable, backend falls back to demo data.
