@@ -21,6 +21,7 @@ const DEMO_SYMBOLS = {
   USDJPY: 149.28,
   BTCUSD: 63850.22
 };
+const TICK_STORAGE_PREFIX = "trading-chart-ticks";
 
 const createId = () =>
   `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -32,7 +33,7 @@ const toNumber = (value) => {
 
 const formatPrice = (value) => (value === null ? "Loading..." : value.toFixed(5));
 
-const aggregateTicks = (ticks, timeframeSeconds) => {
+const aggregateBars = (ticks, timeframeSeconds) => {
   if (ticks.length === 0) {
     return [];
   }
@@ -45,12 +46,71 @@ const aggregateTicks = (ticks, timeframeSeconds) => {
     }
 
     const bucketTime = Math.floor(tick.epochSeconds / timeframeSeconds) * timeframeSeconds;
-    buckets.set(bucketTime, tick.price);
+    const existing = buckets.get(bucketTime);
+
+    if (!existing) {
+      buckets.set(bucketTime, {
+        time: bucketTime,
+        open: tick.price,
+        high: tick.price,
+        low: tick.price,
+        close: tick.price
+      });
+      continue;
+    }
+
+    existing.high = Math.max(existing.high, tick.price);
+    existing.low = Math.min(existing.low, tick.price);
+    existing.close = tick.price;
   }
 
-  return Array.from(buckets.entries())
-    .sort((a, b) => a[0] - b[0])
-    .map(([time, value]) => ({ time, value }));
+  return Array.from(buckets.values()).sort((a, b) => a.time - b.time);
+};
+
+const buildDemoHistory = (symbol) => {
+  const now = Math.floor(Date.now() / 1000);
+  const points = new Map();
+  let price = DEMO_SYMBOLS[symbol] ?? 1;
+
+  const addPoint = (timestamp, volatility) => {
+    const drift = (Math.random() - 0.5) * volatility;
+    price = Math.max(price * (1 + drift), 0.00001);
+    points.set(timestamp, {
+      price: Number(price.toFixed(5)),
+      timestamp: new Date(timestamp * 1000).toISOString(),
+      epochSeconds: timestamp
+    });
+  };
+
+  const hourlyStart = now - 140 * 24 * 3600;
+  for (let t = hourlyStart; t < now - 7 * 24 * 3600; t += 3600) {
+    addPoint(t, 0.006);
+  }
+
+  const fiveMinuteStart = now - 7 * 24 * 3600;
+  for (let t = fiveMinuteStart; t < now - 12 * 3600; t += 300) {
+    addPoint(t, 0.0035);
+  }
+
+  const oneMinuteStart = now - 12 * 3600;
+  for (let t = oneMinuteStart; t <= now; t += 60) {
+    addPoint(t, 0.0025);
+  }
+
+  return Array.from(points.values()).sort((a, b) => a.epochSeconds - b.epochSeconds);
+};
+
+const formatBarTime = (epochSeconds, timeframeLabel) => {
+  if (!Number.isFinite(epochSeconds)) {
+    return "--";
+  }
+
+  const date = new Date(epochSeconds * 1000);
+  if (timeframeLabel === "1d" || timeframeLabel === "1w") {
+    return date.toLocaleDateString();
+  }
+
+  return date.toLocaleString();
 };
 
 function ToolbarButton({ active = false, children, ...props }) {
@@ -215,22 +275,28 @@ export default function RiskCalculatorEntryForm() {
   const demoTimerRef = useRef(null);
 
   const storageKey = `${STORAGE_PREFIX}:${symbol}`;
+  const tickStorageKey = `${TICK_STORAGE_PREFIX}:${symbol}`;
   const selectedTimeframe = useMemo(
     () => TIMEFRAME_OPTIONS.find((option) => option.id === timeframe) || TIMEFRAME_OPTIONS[0],
     [timeframe]
   );
 
-  const displaySeries = useMemo(
-    () => aggregateTicks(priceHistory, selectedTimeframe.seconds),
+  const timeframeBars = useMemo(
+    () => aggregateBars(priceHistory, selectedTimeframe.seconds),
     [priceHistory, selectedTimeframe.seconds]
   );
+  const displaySeries = useMemo(
+    () => timeframeBars.map((bar) => ({ time: bar.time, value: bar.close })),
+    [timeframeBars]
+  );
+  const recentHistoryBars = useMemo(() => timeframeBars.slice(-24).reverse(), [timeframeBars]);
 
   const stats = useMemo(() => {
-    if (displaySeries.length === 0) {
+    if (timeframeBars.length === 0) {
       return { low: 0, high: 0, change: 0, isUp: true };
     }
 
-    const prices = displaySeries.map((point) => point.value);
+    const prices = timeframeBars.map((bar) => bar.close);
     const first = prices[0];
     const last = prices[prices.length - 1];
     const change = last - first;
@@ -241,7 +307,7 @@ export default function RiskCalculatorEntryForm() {
       change,
       isUp: change >= 0
     };
-  }, [displaySeries]);
+  }, [timeframeBars]);
 
   useEffect(() => {
     const raw = window.localStorage.getItem(storageKey);
@@ -264,6 +330,34 @@ export default function RiskCalculatorEntryForm() {
   useEffect(() => {
     window.localStorage.setItem(storageKey, JSON.stringify(drawings));
   }, [drawings, storageKey]);
+
+  useEffect(() => {
+    const raw = window.localStorage.getItem(tickStorageKey);
+    if (!raw) {
+      setPriceHistory([]);
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        setPriceHistory(parsed.slice(-MAX_HISTORY_POINTS));
+      } else {
+        setPriceHistory([]);
+      }
+    } catch (_error) {
+      setPriceHistory([]);
+    }
+  }, [tickStorageKey]);
+
+  useEffect(() => {
+    if (priceHistory.length > 0) {
+      window.localStorage.setItem(
+        tickStorageKey,
+        JSON.stringify(priceHistory.slice(-MAX_HISTORY_POINTS))
+      );
+    }
+  }, [priceHistory, tickStorageKey]);
 
   useEffect(() => {
     if (!chartHostRef.current) {
@@ -351,7 +445,6 @@ export default function RiskCalculatorEntryForm() {
     let hasReceivedLiveTick = false;
     let fallbackTimer = null;
 
-    setPriceHistory([]);
     setLivePrice(null);
     setPriceError("");
     setFeedMode("live");
@@ -374,6 +467,8 @@ export default function RiskCalculatorEntryForm() {
       if (demoTimerRef.current) {
         return;
       }
+
+      setPriceHistory((current) => (current.length === 0 ? buildDemoHistory(symbol) : current));
 
       const basePrice = DEMO_SYMBOLS[symbol] ?? 1;
       let lastPrice = livePrice ?? basePrice;
@@ -454,16 +549,18 @@ export default function RiskCalculatorEntryForm() {
     const bounds = chartHostRef.current.getBoundingClientRect();
     const x = event.clientX - bounds.left;
     const y = event.clientY - bounds.top;
+    const logical = chartRef.current.timeScale().coordinateToLogical(x);
     const time = chartRef.current.timeScale().coordinateToTime(x);
     const price = seriesRef.current.coordinateToPrice(y);
 
-    if (time === null || price === null) {
+    if (logical === null || time === null || price === null) {
       return null;
     }
 
     return {
       x,
       y,
+      logical: Number(logical),
       time: Number(time),
       price: Number(price)
     };
@@ -475,8 +572,14 @@ export default function RiskCalculatorEntryForm() {
     }
 
     if (drawing.type === "trend") {
-      const startX = chartRef.current.timeScale().timeToCoordinate(drawing.start.time);
-      const endX = chartRef.current.timeScale().timeToCoordinate(drawing.end.time);
+      const startX =
+        Number.isFinite(drawing.start.logical)
+          ? chartRef.current.timeScale().logicalToCoordinate(drawing.start.logical)
+          : chartRef.current.timeScale().timeToCoordinate(drawing.start.time);
+      const endX =
+        Number.isFinite(drawing.end.logical)
+          ? chartRef.current.timeScale().logicalToCoordinate(drawing.end.logical)
+          : chartRef.current.timeScale().timeToCoordinate(drawing.end.time);
       const startY = seriesRef.current.priceToCoordinate(drawing.start.price);
       const endY = seriesRef.current.priceToCoordinate(drawing.end.price);
 
@@ -509,7 +612,9 @@ export default function RiskCalculatorEntryForm() {
 
     const points = drawing.points
       .map((point) => {
-        const x = chartRef.current.timeScale().timeToCoordinate(point.time);
+        const x = Number.isFinite(point.logical)
+          ? chartRef.current.timeScale().logicalToCoordinate(point.logical)
+          : chartRef.current.timeScale().timeToCoordinate(point.time);
         const y = seriesRef.current.priceToCoordinate(point.price);
         if (x === null || y === null) {
           return null;
@@ -785,6 +890,43 @@ export default function RiskCalculatorEntryForm() {
             <p>`Horizontal`: click once at the price level.</p>
             <p>`Freehand`: press, draw, release.</p>
             <p>`Save`: stores drawings in your browser for the current symbol.</p>
+          </div>
+        </div>
+
+        <div className="rounded-[24px] border border-white/10 bg-panel/90 p-5 shadow-card backdrop-blur">
+          <p className="text-xs uppercase tracking-[0.3em] text-ink/55">History Record</p>
+          <div className="mt-4 max-h-72 overflow-auto rounded-xl border border-white/10 bg-black/25">
+            <table className="w-full border-collapse text-xs text-ink/80">
+              <thead className="sticky top-0 bg-[#121820] text-ink/65">
+                <tr>
+                  <th className="px-2 py-2 text-left">Time</th>
+                  <th className="px-2 py-2 text-right">O</th>
+                  <th className="px-2 py-2 text-right">H</th>
+                  <th className="px-2 py-2 text-right">L</th>
+                  <th className="px-2 py-2 text-right">C</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recentHistoryBars.map((bar) => (
+                  <tr key={bar.time} className="border-t border-white/5">
+                    <td className="px-2 py-1.5 text-left text-ink/70">
+                      {formatBarTime(bar.time, selectedTimeframe.label)}
+                    </td>
+                    <td className="px-2 py-1.5 text-right">{bar.open.toFixed(5)}</td>
+                    <td className="px-2 py-1.5 text-right">{bar.high.toFixed(5)}</td>
+                    <td className="px-2 py-1.5 text-right">{bar.low.toFixed(5)}</td>
+                    <td className="px-2 py-1.5 text-right">{bar.close.toFixed(5)}</td>
+                  </tr>
+                ))}
+                {recentHistoryBars.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-2 py-3 text-center text-ink/60">
+                      Waiting for historical bars...
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
           </div>
         </div>
 
