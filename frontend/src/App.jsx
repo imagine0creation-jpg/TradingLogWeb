@@ -8,7 +8,8 @@ export default function App() {
           Live Trading Chart
         </h1>
         <p className="mt-2 max-w-2xl text-sm text-ink/80 sm:text-base">
-          A focused chart workspace with live prices, drawing tools, and saved annotations.
+          A focused chart workspace with live prices, drawing tools, saved annotations, and
+          timeframe history records.
         </p>
         <div className="mt-8">
           <RiskCalculatorEntryForm />
