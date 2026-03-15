@@ -5,6 +5,12 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000
 const SYMBOL_OPTIONS = ["EURUSD", "GBPUSD", "USDJPY", "BTCUSD"];
 const MAX_HISTORY_POINTS = 240;
 const STORAGE_PREFIX = "trading-chart-drawings";
+const DEMO_SYMBOLS = {
+  EURUSD: 1.0894,
+  GBPUSD: 1.2741,
+  USDJPY: 149.28,
+  BTCUSD: 63850.22
+};
 
 const createId = () =>
   `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -168,11 +174,13 @@ export default function RiskCalculatorEntryForm() {
   const [draft, setDraft] = useState(null);
   const [statusMessage, setStatusMessage] = useState("Drawings save automatically on this device.");
   const [chartSize, setChartSize] = useState({ width: 0, height: 0 });
+  const [feedMode, setFeedMode] = useState("live");
 
   const chartHostRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
   const drawingStartRef = useRef(null);
+  const demoTimerRef = useRef(null);
 
   const storageKey = `${STORAGE_PREFIX}:${symbol}`;
 
@@ -286,31 +294,72 @@ export default function RiskCalculatorEntryForm() {
   useEffect(() => {
     const streamUrl = `${API_BASE_URL}/api/prices/stream?symbol=${encodeURIComponent(symbol)}`;
     const eventSource = new EventSource(streamUrl);
+    let hasReceivedLiveTick = false;
 
     setPriceHistory([]);
     setLivePrice(null);
     setPriceError("");
+    setFeedMode("live");
+
+    const pushTick = (nextPrice, timestamp = new Date().toISOString()) => {
+      setLivePrice(nextPrice);
+      setPriceHistory((current) => {
+        const nextHistory = [...current, { price: nextPrice, timestamp }];
+        return nextHistory.slice(-MAX_HISTORY_POINTS);
+      });
+    };
+
+    const startDemoFeed = () => {
+      if (demoTimerRef.current) {
+        return;
+      }
+
+      const basePrice = DEMO_SYMBOLS[symbol] ?? 1;
+      let lastPrice = livePrice ?? basePrice;
+
+      setFeedMode("demo");
+      setPriceError("Backend offline. Showing demo live feed so chart and drawings still work.");
+      pushTick(lastPrice);
+
+      demoTimerRef.current = window.setInterval(() => {
+        const drift = (Math.random() - 0.5) * 0.004;
+        lastPrice = Math.max(lastPrice * (1 + drift), 0.00001);
+        pushTick(Number(lastPrice.toFixed(5)));
+      }, 1000);
+    };
+
+    const stopDemoFeed = () => {
+      if (demoTimerRef.current) {
+        window.clearInterval(demoTimerRef.current);
+        demoTimerRef.current = null;
+      }
+    };
 
     eventSource.onmessage = (event) => {
       try {
         const payload = JSON.parse(event.data);
         const nextPrice = toNumber(payload.price);
-        setLivePrice(nextPrice);
-        setPriceHistory((current) => {
-          const nextHistory = [...current, { price: nextPrice, timestamp: payload.timestamp }];
-          return nextHistory.slice(-MAX_HISTORY_POINTS);
-        });
+        hasReceivedLiveTick = true;
+        stopDemoFeed();
+        setFeedMode("live");
+        setPriceError("");
+        pushTick(nextPrice, payload.timestamp);
       } catch (_error) {
         setPriceError("Unable to parse live price payload.");
       }
     };
 
     eventSource.onerror = () => {
-      setPriceError("Live stream unavailable. Confirm the backend is running.");
+      if (!hasReceivedLiveTick) {
+        startDemoFeed();
+      } else {
+        setPriceError("Live stream interrupted.");
+      }
     };
 
     return () => {
       eventSource.close();
+      stopDemoFeed();
     };
   }, [symbol]);
 
@@ -570,11 +619,14 @@ export default function RiskCalculatorEntryForm() {
               </select>
             </label>
 
-            <div className="rounded-2xl border border-white/10 bg-black/25 px-4 py-3">
-              <p className="text-xs uppercase tracking-wide text-ink/55">Live Price</p>
-              <p className="font-display text-2xl text-lime">{formatPrice(livePrice)}</p>
-            </div>
+          <div className="rounded-2xl border border-white/10 bg-black/25 px-4 py-3">
+            <p className="text-xs uppercase tracking-wide text-ink/55">Live Price</p>
+            <p className="font-display text-2xl text-lime">{formatPrice(livePrice)}</p>
+            <p className="mt-1 text-[10px] uppercase tracking-[0.25em] text-ink/45">
+              {feedMode === "live" ? "Backend feed" : "Demo feed"}
+            </p>
           </div>
+        </div>
         </div>
 
         <div className="mt-5 flex flex-wrap gap-2">
@@ -655,6 +707,9 @@ export default function RiskCalculatorEntryForm() {
           <p className="text-xs uppercase tracking-[0.3em] text-ink/55">Status</p>
           <p className="mt-3 text-sm text-ink/75">{statusMessage}</p>
           {priceError ? <p className="mt-3 text-sm text-alert">{priceError}</p> : null}
+          <p className="mt-3 text-xs text-ink/55">
+            Current source: {feedMode === "live" ? "backend stream" : "browser demo simulation"}
+          </p>
           <p className="mt-4 text-xs text-ink/50">{drawings.length} saved drawings on {symbol}</p>
         </div>
       </aside>
