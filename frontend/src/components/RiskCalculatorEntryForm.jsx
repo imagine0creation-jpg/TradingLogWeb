@@ -3,8 +3,18 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
 const SYMBOL_OPTIONS = ["EURUSD", "GBPUSD", "USDJPY", "BTCUSD"];
-const MAX_HISTORY_POINTS = 240;
+const MAX_HISTORY_POINTS = 7200;
 const STORAGE_PREFIX = "trading-chart-drawings";
+const TIMEFRAME_OPTIONS = [
+  { id: "1m", label: "1m", seconds: 60 },
+  { id: "5m", label: "5m", seconds: 300 },
+  { id: "15m", label: "15m", seconds: 900 },
+  { id: "30m", label: "30m", seconds: 1800 },
+  { id: "1h", label: "1h", seconds: 3600 },
+  { id: "4h", label: "4h", seconds: 14400 },
+  { id: "1d", label: "1d", seconds: 86400 },
+  { id: "1w", label: "1w", seconds: 604800 }
+];
 const DEMO_SYMBOLS = {
   EURUSD: 1.0894,
   GBPUSD: 1.2741,
@@ -21,6 +31,27 @@ const toNumber = (value) => {
 };
 
 const formatPrice = (value) => (value === null ? "Loading..." : value.toFixed(5));
+
+const aggregateTicks = (ticks, timeframeSeconds) => {
+  if (ticks.length === 0) {
+    return [];
+  }
+
+  const buckets = new Map();
+
+  for (const tick of ticks) {
+    if (!Number.isFinite(tick.epochSeconds)) {
+      continue;
+    }
+
+    const bucketTime = Math.floor(tick.epochSeconds / timeframeSeconds) * timeframeSeconds;
+    buckets.set(bucketTime, tick.price);
+  }
+
+  return Array.from(buckets.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([time, value]) => ({ time, value }));
+};
 
 function ToolbarButton({ active = false, children, ...props }) {
   return (
@@ -166,6 +197,7 @@ function ChartOverlay({
 
 export default function RiskCalculatorEntryForm() {
   const [symbol, setSymbol] = useState("EURUSD");
+  const [timeframe, setTimeframe] = useState("1m");
   const [livePrice, setLivePrice] = useState(null);
   const [priceHistory, setPriceHistory] = useState([]);
   const [priceError, setPriceError] = useState("");
@@ -183,13 +215,22 @@ export default function RiskCalculatorEntryForm() {
   const demoTimerRef = useRef(null);
 
   const storageKey = `${STORAGE_PREFIX}:${symbol}`;
+  const selectedTimeframe = useMemo(
+    () => TIMEFRAME_OPTIONS.find((option) => option.id === timeframe) || TIMEFRAME_OPTIONS[0],
+    [timeframe]
+  );
+
+  const displaySeries = useMemo(
+    () => aggregateTicks(priceHistory, selectedTimeframe.seconds),
+    [priceHistory, selectedTimeframe.seconds]
+  );
 
   const stats = useMemo(() => {
-    if (priceHistory.length === 0) {
+    if (displaySeries.length === 0) {
       return { low: 0, high: 0, change: 0, isUp: true };
     }
 
-    const prices = priceHistory.map((point) => point.price);
+    const prices = displaySeries.map((point) => point.value);
     const first = prices[0];
     const last = prices[prices.length - 1];
     const change = last - first;
@@ -200,7 +241,7 @@ export default function RiskCalculatorEntryForm() {
       change,
       isUp: change >= 0
     };
-  }, [priceHistory]);
+  }, [displaySeries]);
 
   useEffect(() => {
     const raw = window.localStorage.getItem(storageKey);
@@ -247,7 +288,7 @@ export default function RiskCalculatorEntryForm() {
       timeScale: {
         borderColor: "rgba(255,255,255,0.08)",
         timeVisible: true,
-        secondsVisible: true
+        secondsVisible: false
       },
       crosshair: {
         mode: 0,
@@ -292,6 +333,19 @@ export default function RiskCalculatorEntryForm() {
   }, []);
 
   useEffect(() => {
+    if (!chartRef.current) {
+      return;
+    }
+
+    chartRef.current.applyOptions({
+      timeScale: {
+        timeVisible: true,
+        secondsVisible: selectedTimeframe.seconds < 3600
+      }
+    });
+  }, [selectedTimeframe.seconds]);
+
+  useEffect(() => {
     const streamUrl = `${API_BASE_URL}/api/prices/stream?symbol=${encodeURIComponent(symbol)}`;
     const eventSource = new EventSource(streamUrl);
     let hasReceivedLiveTick = false;
@@ -303,9 +357,10 @@ export default function RiskCalculatorEntryForm() {
     setFeedMode("live");
 
     const pushTick = (nextPrice, timestamp = new Date().toISOString()) => {
+      const epochSeconds = Math.floor(new Date(timestamp).getTime() / 1000);
       setLivePrice(nextPrice);
       setPriceHistory((current) => {
-        const nextHistory = [...current, { price: nextPrice, timestamp }];
+        const nextHistory = [...current, { price: nextPrice, timestamp, epochSeconds }];
         return nextHistory.slice(-MAX_HISTORY_POINTS);
       });
     };
@@ -387,14 +442,9 @@ export default function RiskCalculatorEntryForm() {
       return;
     }
 
-    const data = priceHistory.map((point) => ({
-      time: Math.floor(new Date(point.timestamp).getTime() / 1000),
-      value: point.price
-    }));
-
-    seriesRef.current.setData(data);
+    seriesRef.current.setData(displaySeries);
     chartRef.current?.timeScale().fitContent();
-  }, [priceHistory]);
+  }, [displaySeries]);
 
   const toChartPoint = (event) => {
     if (!chartHostRef.current || !chartRef.current || !seriesRef.current) {
@@ -638,14 +688,29 @@ export default function RiskCalculatorEntryForm() {
               </select>
             </label>
 
-          <div className="rounded-2xl border border-white/10 bg-black/25 px-4 py-3">
-            <p className="text-xs uppercase tracking-wide text-ink/55">Live Price</p>
-            <p className="font-display text-2xl text-lime">{formatPrice(livePrice)}</p>
-            <p className="mt-1 text-[10px] uppercase tracking-[0.25em] text-ink/45">
-              {feedMode === "live" ? "Backend feed" : "Demo feed"}
-            </p>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs uppercase tracking-wide text-ink/65">Timeframe</span>
+              <select
+                value={timeframe}
+                onChange={(event) => setTimeframe(event.target.value)}
+                className="rounded-xl border border-white/15 bg-black/25 px-4 py-2 text-sm text-ink outline-none transition focus:border-lime/70 focus:ring-2 focus:ring-lime/30"
+              >
+                {TIMEFRAME_OPTIONS.map((option) => (
+                  <option key={option.id} value={option.id} className="bg-shell text-ink">
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <div className="rounded-2xl border border-white/10 bg-black/25 px-4 py-3">
+              <p className="text-xs uppercase tracking-wide text-ink/55">Live Price</p>
+              <p className="font-display text-2xl text-lime">{formatPrice(livePrice)}</p>
+              <p className="mt-1 text-[10px] uppercase tracking-[0.25em] text-ink/45">
+                {feedMode === "live" ? "Backend feed" : "Demo feed"}
+              </p>
+            </div>
           </div>
-        </div>
         </div>
 
         <div className="mt-5 flex flex-wrap gap-2">
@@ -669,6 +734,7 @@ export default function RiskCalculatorEntryForm() {
         <div className="mt-5 overflow-hidden rounded-[24px] border border-white/10 bg-[#0c1117]">
           <div className="flex items-center justify-between border-b border-white/10 px-4 py-3 text-xs uppercase tracking-wide text-ink/60">
             <span>{symbol}</span>
+            <span>{selectedTimeframe.label}</span>
             <span>{mode === "none" ? "Chart navigation mode" : `Drawing mode: ${mode}`}</span>
           </div>
 
@@ -729,6 +795,7 @@ export default function RiskCalculatorEntryForm() {
           <p className="mt-3 text-xs text-ink/55">
             Current source: {feedMode === "live" ? "backend stream" : "browser demo simulation"}
           </p>
+          <p className="mt-2 text-xs text-ink/55">Active timeframe: {selectedTimeframe.label}</p>
           <p className="mt-4 text-xs text-ink/50">{drawings.length} saved drawings on {symbol}</p>
         </div>
       </aside>
