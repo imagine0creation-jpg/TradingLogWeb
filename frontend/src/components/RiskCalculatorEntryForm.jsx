@@ -94,10 +94,14 @@ export default function RiskCalculatorEntryForm() {
           return;
         }
 
-        chartHostRef.current.innerHTML = "";
         if (!TradingView || typeof TradingView.widget !== "function") {
           throw new Error("TradingView widget is unavailable.");
         }
+
+        const widgetContainer = document.createElement("div");
+        widgetContainer.id = WIDGET_CONTAINER_ID;
+        widgetContainer.className = "h-[620px] w-full";
+        chartHostRef.current.replaceChildren(widgetContainer);
 
         new TradingView.widget({
           autosize: true,
@@ -134,7 +138,7 @@ export default function RiskCalculatorEntryForm() {
     return () => {
       isCancelled = true;
       if (chartHostRef.current) {
-        chartHostRef.current.innerHTML = "";
+        chartHostRef.current.replaceChildren();
       }
     };
   }, [selectedAsset.tvSymbol, selectedTimeframe.tvInterval]);
@@ -239,9 +243,7 @@ export default function RiskCalculatorEntryForm() {
             <span>{selectedTimeframe.label}</span>
             <span>{chartStatus}</span>
           </div>
-          <div ref={chartHostRef} className="p-0">
-            <div id={WIDGET_CONTAINER_ID} className="h-[620px] w-full" />
-          </div>
+          <div ref={chartHostRef} className="h-[620px] w-full p-0" />
         </div>
       </section>
 
