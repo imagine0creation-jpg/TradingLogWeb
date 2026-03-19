@@ -70,7 +70,10 @@ export default function RiskCalculatorEntryForm() {
   const [chartStatus, setChartStatus] = useState("Loading TradingView chart...");
   const [chartError, setChartError] = useState("");
   const [isFetchingPrice, setIsFetchingPrice] = useState(false);
+  const [isCapturing, setIsCapturing] = useState(false);
+  const [captureMessage, setCaptureMessage] = useState("");
   const chartHostRef = useRef(null);
+  const widgetRef = useRef(null);
 
   const selectedAsset = useMemo(
     () => ASSET_OPTIONS.find((option) => option.id === symbol) || ASSET_OPTIONS[0],
@@ -103,7 +106,7 @@ export default function RiskCalculatorEntryForm() {
         widgetContainer.className = "h-[620px] w-full";
         chartHostRef.current.replaceChildren(widgetContainer);
 
-        new TradingView.widget({
+        widgetRef.current = new TradingView.widget({
           autosize: true,
           container_id: WIDGET_CONTAINER_ID,
           symbol: selectedAsset.tvSymbol,
@@ -137,6 +140,7 @@ export default function RiskCalculatorEntryForm() {
 
     return () => {
       isCancelled = true;
+      widgetRef.current = null;
       if (chartHostRef.current) {
         chartHostRef.current.replaceChildren();
       }
@@ -182,6 +186,51 @@ export default function RiskCalculatorEntryForm() {
 
     return () => window.clearInterval(timerId);
   }, [selectedAsset.id]);
+
+  const captureChart = async () => {
+    setIsCapturing(true);
+    setCaptureMessage("");
+
+    try {
+      const widget = widgetRef.current;
+      if (!widget) {
+        throw new Error("Chart is still loading. Please wait and try again.");
+      }
+
+      if (typeof widget.takeClientScreenshot !== "function") {
+        throw new Error(
+          "Direct screenshot API is not available. Use the camera icon on the chart toolbar."
+        );
+      }
+
+      const screenshotCanvas = await widget.takeClientScreenshot();
+      const fileName = `chart-${selectedAsset.id}-${timeframe}-${Date.now()}.png`;
+      const blob = await new Promise((resolve, reject) => {
+        screenshotCanvas.toBlob((nextBlob) => {
+          if (nextBlob) {
+            resolve(nextBlob);
+            return;
+          }
+          reject(new Error("Unable to create image file."));
+        }, "image/png");
+      });
+
+      const downloadUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = downloadUrl;
+      anchor.download = fileName;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+
+      setCaptureMessage("Chart screenshot downloaded.");
+    } catch (error) {
+      setCaptureMessage(error instanceof Error ? error.message : "Screenshot failed.");
+    } finally {
+      setIsCapturing(false);
+    }
+  };
 
   return (
     <div className="grid gap-6 xl:grid-cols-[1fr_320px]">
@@ -234,6 +283,15 @@ export default function RiskCalculatorEntryForm() {
             >
               {isFetchingPrice ? "Loading..." : "Get Live Price"}
             </button>
+
+            <button
+              type="button"
+              onClick={captureChart}
+              disabled={isCapturing}
+              className="rounded-xl border border-sand/60 bg-sand/15 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-sand transition hover:bg-sand/25 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isCapturing ? "Capturing..." : "Capture PNG"}
+            </button>
           </div>
         </div>
 
@@ -266,6 +324,7 @@ export default function RiskCalculatorEntryForm() {
           <p className="mt-2 text-xs text-ink/55">
             Widget drawings are handled by TradingView UI, not by local backend storage.
           </p>
+          {captureMessage ? <p className="mt-3 text-sm text-ink/75">{captureMessage}</p> : null}
           {chartError ? <p className="mt-3 text-sm text-alert">{chartError}</p> : null}
         </div>
       </aside>
