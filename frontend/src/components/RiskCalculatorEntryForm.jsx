@@ -12,9 +12,7 @@ const ASSET_OPTIONS = [
 
 const TIMEFRAME_OPTIONS = [
   { id: "1m", label: "1m", tvInterval: "1" },
-  { id: "5m", label: "5m", tvInterval: "5" },
   { id: "15m", label: "15m", tvInterval: "15" },
-  { id: "30m", label: "30m", tvInterval: "30" },
   { id: "1h", label: "1h", tvInterval: "60" },
   { id: "4h", label: "4h", tvInterval: "240" },
   { id: "1d", label: "1D", tvInterval: "D" },
@@ -63,7 +61,7 @@ const formatPrice = (value, precision) =>
 
 export default function RiskCalculatorEntryForm() {
   const [symbol, setSymbol] = useState("EURUSD");
-  const [timeframe, setTimeframe] = useState("15m");
+  const [timeframe, setTimeframe] = useState("1m");
   const [livePrice, setLivePrice] = useState(null);
   const [priceSource, setPriceSource] = useState("waiting");
   const [priceError, setPriceError] = useState("");
@@ -115,16 +113,25 @@ export default function RiskCalculatorEntryForm() {
           theme: "dark",
           style: "1",
           locale: "en",
-          hide_top_toolbar: false,
+          hide_top_toolbar: true,
           hide_legend: false,
           hide_side_toolbar: false,
           allow_symbol_change: false,
-          withdateranges: true,
+          withdateranges: false,
           save_image: true,
           enable_publishing: false,
           details: true,
           hotlist: false,
-          calendar: false
+          calendar: false,
+          disabled_features: ["create_volume_indicator_by_default"],
+          overrides: {
+            "mainSeriesProperties.candleStyle.upColor": "#f97316",
+            "mainSeriesProperties.candleStyle.downColor": "#9ca3af",
+            "mainSeriesProperties.candleStyle.borderUpColor": "#f97316",
+            "mainSeriesProperties.candleStyle.borderDownColor": "#9ca3af",
+            "mainSeriesProperties.candleStyle.wickUpColor": "#f97316",
+            "mainSeriesProperties.candleStyle.wickDownColor": "#9ca3af"
+          }
         });
 
         setChartStatus("TradingView chart ready. Use the left toolbar for drawing.");
