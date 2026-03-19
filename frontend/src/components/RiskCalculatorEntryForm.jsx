@@ -187,42 +187,107 @@ export default function RiskCalculatorEntryForm() {
     return () => window.clearInterval(timerId);
   }, [selectedAsset.id]);
 
+  const downloadCanvasAsPng = async (canvas, fileName) => {
+    const blob = await new Promise((resolve, reject) => {
+      canvas.toBlob((nextBlob) => {
+        if (nextBlob) {
+          resolve(nextBlob);
+          return;
+        }
+        reject(new Error("Unable to create image file."));
+      }, "image/png");
+    });
+
+    const downloadUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = downloadUrl;
+    anchor.download = fileName;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+  };
+
+  const captureChartFromTab = async () => {
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      throw new Error("This browser does not support tab capture.");
+    }
+
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: true,
+      audio: false
+    });
+
+    try {
+      const videoTrack = stream.getVideoTracks()[0];
+      if (!videoTrack) {
+        throw new Error("No video track available for capture.");
+      }
+
+      const video = document.createElement("video");
+      video.srcObject = stream;
+      video.muted = true;
+      video.playsInline = true;
+      await video.play();
+
+      const frameWidth = video.videoWidth || videoTrack.getSettings().width || window.innerWidth;
+      const frameHeight = video.videoHeight || videoTrack.getSettings().height || window.innerHeight;
+
+      const frameCanvas = document.createElement("canvas");
+      frameCanvas.width = frameWidth;
+      frameCanvas.height = frameHeight;
+      const frameContext = frameCanvas.getContext("2d");
+      if (!frameContext) {
+        throw new Error("Canvas context unavailable.");
+      }
+      frameContext.drawImage(video, 0, 0, frameWidth, frameHeight);
+
+      const target = chartHostRef.current;
+      if (!target) {
+        return frameCanvas;
+      }
+
+      const rect = target.getBoundingClientRect();
+      const scaleX = frameWidth / window.innerWidth;
+      const scaleY = frameHeight / window.innerHeight;
+
+      const sx = Math.max(0, Math.floor(rect.left * scaleX));
+      const sy = Math.max(0, Math.floor(rect.top * scaleY));
+      const sw = Math.max(1, Math.min(frameWidth - sx, Math.floor(rect.width * scaleX)));
+      const sh = Math.max(1, Math.min(frameHeight - sy, Math.floor(rect.height * scaleY)));
+
+      const croppedCanvas = document.createElement("canvas");
+      croppedCanvas.width = sw;
+      croppedCanvas.height = sh;
+      const croppedContext = croppedCanvas.getContext("2d");
+      if (!croppedContext) {
+        throw new Error("Canvas context unavailable.");
+      }
+      croppedContext.drawImage(frameCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
+
+      return croppedCanvas;
+    } finally {
+      stream.getTracks().forEach((track) => track.stop());
+    }
+  };
+
   const captureChart = async () => {
     setIsCapturing(true);
     setCaptureMessage("");
 
     try {
       const widget = widgetRef.current;
-      if (!widget) {
-        throw new Error("Chart is still loading. Please wait and try again.");
-      }
-
-      if (typeof widget.takeClientScreenshot !== "function") {
-        throw new Error(
-          "Direct screenshot API is not available. Use the camera icon on the chart toolbar."
-        );
+      if (!widget || typeof widget.takeClientScreenshot !== "function") {
+        const fallbackCanvas = await captureChartFromTab();
+        const fallbackFileName = `chart-${selectedAsset.id}-${timeframe}-${Date.now()}.png`;
+        await downloadCanvasAsPng(fallbackCanvas, fallbackFileName);
+        setCaptureMessage("Chart screenshot downloaded (tab-capture mode).");
+        return;
       }
 
       const screenshotCanvas = await widget.takeClientScreenshot();
       const fileName = `chart-${selectedAsset.id}-${timeframe}-${Date.now()}.png`;
-      const blob = await new Promise((resolve, reject) => {
-        screenshotCanvas.toBlob((nextBlob) => {
-          if (nextBlob) {
-            resolve(nextBlob);
-            return;
-          }
-          reject(new Error("Unable to create image file."));
-        }, "image/png");
-      });
-
-      const downloadUrl = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = downloadUrl;
-      anchor.download = fileName;
-      document.body.appendChild(anchor);
-      anchor.click();
-      document.body.removeChild(anchor);
-      window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+      await downloadCanvasAsPng(screenshotCanvas, fileName);
 
       setCaptureMessage("Chart screenshot downloaded.");
     } catch (error) {
