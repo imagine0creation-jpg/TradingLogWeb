@@ -65,6 +65,7 @@ export default function RiskCalculatorEntryForm() {
   const [livePrice, setLivePrice] = useState(null);
   const [priceSource, setPriceSource] = useState("waiting");
   const [priceError, setPriceError] = useState("");
+  const [livePriceText, setLivePriceText] = useState("");
   const [chartStatus, setChartStatus] = useState("Loading TradingView chart...");
   const [chartError, setChartError] = useState("");
   const [isFetchingPrice, setIsFetchingPrice] = useState(false);
@@ -154,7 +155,7 @@ export default function RiskCalculatorEntryForm() {
     };
   }, [selectedAsset.tvSymbol, selectedTimeframe.tvInterval]);
 
-  const fetchLivePrice = async (silent = false) => {
+  const fetchLivePrice = async ({ silent = false, writeToTextbox = false } = {}) => {
     if (!silent) {
       setIsFetchingPrice(true);
     }
@@ -176,6 +177,11 @@ export default function RiskCalculatorEntryForm() {
 
       setLivePrice(nextPrice);
       setPriceSource(payload.source || "backend");
+      if (writeToTextbox) {
+        const priceString = nextPrice.toFixed(selectedAsset.precision);
+        const timestamp = new Date().toLocaleString();
+        setLivePriceText(`${selectedAsset.id} | ${priceString} | ${timestamp}`);
+      }
     } catch (error) {
       setPriceError(error instanceof Error ? error.message : "Could not fetch live price.");
     } finally {
@@ -186,9 +192,9 @@ export default function RiskCalculatorEntryForm() {
   };
 
   useEffect(() => {
-    fetchLivePrice(true);
+    fetchLivePrice({ silent: true });
     const timerId = window.setInterval(() => {
-      fetchLivePrice(true);
+      fetchLivePrice({ silent: true });
     }, 15000);
 
     return () => window.clearInterval(timerId);
@@ -349,7 +355,7 @@ export default function RiskCalculatorEntryForm() {
 
             <button
               type="button"
-              onClick={() => fetchLivePrice(false)}
+              onClick={() => fetchLivePrice({ writeToTextbox: true })}
               disabled={isFetchingPrice}
               className="rounded-xl border border-lime/70 bg-lime/20 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-lime transition hover:bg-lime/30 disabled:cursor-not-allowed disabled:opacity-60"
             >
@@ -385,6 +391,16 @@ export default function RiskCalculatorEntryForm() {
           </p>
           <p className="mt-2 text-xs text-ink/60">Source: {priceSource}</p>
           <p className="mt-2 text-xs text-ink/60">Backend symbol: {selectedAsset.id}</p>
+          <label className="mt-4 block">
+            <span className="text-xs uppercase tracking-wide text-ink/65">Price Text Box</span>
+            <textarea
+              value={livePriceText}
+              onChange={(event) => setLivePriceText(event.target.value)}
+              placeholder="Click 'Get Live Price' to generate text here."
+              rows={3}
+              className="mt-2 w-full resize-none rounded-xl border border-white/15 bg-black/30 px-3 py-2 text-sm text-ink outline-none transition focus:border-lime/70 focus:ring-2 focus:ring-lime/30"
+            />
+          </label>
           {priceError ? <p className="mt-3 text-sm text-alert">{priceError}</p> : null}
         </div>
 
